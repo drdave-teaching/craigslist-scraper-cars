@@ -1,0 +1,51 @@
+name: Deploy Scraper (CF Gen2)
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write  # needed for OIDC / WIF
+
+    env:
+      PROJECT_ID: craigslist-scraper-cars
+      REGION: us-central1
+      BUCKET_NAME: craigslist-scraper-cars-data
+      FUNCTION_NAME: scraper-cf
+      RUNTIME_SA: cf-runtime@craigslist-scraper-cars.iam.gserviceaccount.com
+      WORKLOAD_IDENTITY_PROVIDER: ${{ vars.WORKLOAD_IDENTITY_PROVIDER }}
+      DEPLOYER_SA: ${{ vars.DEPLOYER_SA }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Auth via WIF
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.DEPLOYER_SA }}
+          create_credentials_file: true
+          export_environment_variables: true
+
+      - name: Set gcloud project
+        run: gcloud config set project $PROJECT_ID
+
+      - name: Deploy CF Gen2
+        run: |
+          gcloud functions deploy "$FUNCTION_NAME" \
+            --project="$PROJECT_ID" \
+            --gen2 --region="$REGION" \
+            --runtime=python312 \
+            --entry-point=entrypoint \
+            --trigger-http \
+            --no-allow-unauthenticated \
+            --service-account="$RUNTIME_SA" \
+            --set-env-vars "PROJECT_ID=$PROJECT_ID,BUCKET_NAME=$BUCKET_NAME" \
+            --memory=512Mi
+
+      - name: Show URL
+        run: gcloud functions describe "$FUNCTION_NAME" --gen2 --region "$REGION" --format="value(serviceConfig.uri)"
