@@ -1,2 +1,4 @@
 google-cloud-storage
 Flask
+requests
+beautifulsoup4
