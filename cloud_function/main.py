@@ -26,30 +26,35 @@ def _page_url(base: str, path: str, page: int) -> str:
     return f"{base}{path}?hasPic=1&srchType=T&s={page*120}"
 
 import re
-POST_PAGE_RE = re.compile(r"/\d+\.html?$")
+POST_PAGE_RE = re.compile(r"/(\d+)\.html?$")
 
 def _extract_listing_links(html: str) -> list[str]:
     """Return absolute URLs to individual listings from a search results page.
-       Handles both classic and newer Craigslist layouts.
+       Handles classic/new layouts and falls back to regex if needed.
     """
     soup = BeautifulSoup(html, "html.parser")
     links = set()
 
-    # 1) Classic layout
+    # Classic layout
     for a in soup.select("a.result-title, a.result-title.hdrlnk"):
         href = a.get("href")
         if href: links.add(href)
 
-    # 2) Newer layout (cl-static / cl-search)
+    # Newer layout (cl-static / cl-search)
     for a in soup.select("li.cl-search-result a.titlestring"):
         href = a.get("href")
         if href: links.add(href)
 
-    # 3) Fallback: any anchor under typical containers that looks like a posting
-    for a in soup.select("li.cl-search-result a, .result-row a"):
+    # Fallback: any anchor that looks like a posting
+    for a in soup.select("li.cl-search-result a, .result-row a, a[href$='.html']"):
         href = a.get("href")
         if href and POST_PAGE_RE.search(href):
             links.add(href)
+
+    # Final fallback: regex scan of raw HTML
+    # matches absolute or relative post URLs ending with /<post_id>.html
+    for m in re.findall(r'href="([^"]+?/\d+\.html)"', html):
+        links.add(m)
 
     # Normalize to absolute
     abs_links = []
