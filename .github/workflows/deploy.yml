@@ -34,7 +34,7 @@ jobs:
       - name: Set gcloud project
         run: gcloud config set project $PROJECT_ID
 
-      - name: Deploy CF Gen2
+      - name: Deploy CF Gen2 (from cloud_function/)
         run: |
           gcloud functions deploy "$FUNCTION_NAME" \
             --project="$PROJECT_ID" \
@@ -45,7 +45,9 @@ jobs:
             --no-allow-unauthenticated \
             --service-account="$RUNTIME_SA" \
             --set-env-vars "PROJECT_ID=$PROJECT_ID,BUCKET_NAME=$BUCKET_NAME" \
-            --memory=512Mi
+            --memory=512Mi \
+            --source "cloud_function"
 
       - name: Show URL
+        if: ${{ success() }}
         run: gcloud functions describe "$FUNCTION_NAME" --gen2 --region "$REGION" --format="value(serviceConfig.uri)"
