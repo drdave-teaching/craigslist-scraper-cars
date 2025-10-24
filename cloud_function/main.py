@@ -159,10 +159,13 @@ def entrypoint(request: Request):
         header = sorted(index_rows[0].keys())
         _upload_csv(BUCKET_NAME, f"{run_prefix}/index.csv", index_rows, header)
 
+    # after building `listing_urls` and `urls`
     return jsonify({
         "ok": True,
         "run_id": run_id,
         "pages_scanned": pages,
+        "candidates_found": len(listing_urls),   # <-- add this
         "items_attempted": len(urls),
         "saved_prefix": run_prefix
     })
+
