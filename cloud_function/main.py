@@ -25,19 +25,46 @@ def _page_url(base: str, path: str, page: int) -> str:
         return f"{base}{path}?hasPic=1&srchType=T"
     return f"{base}{path}?hasPic=1&srchType=T&s={page*120}"
 
-def _extract_listing_links(html: str) -> List[str]:
-    """Return absolute URLs to individual listings from a search page."""
+import re
+POST_PAGE_RE = re.compile(r"/\d+\.html?$")
+
+def _extract_listing_links(html: str) -> list[str]:
+    """Return absolute URLs to individual listings from a search results page.
+       Handles both classic and newer Craigslist layouts.
+    """
     soup = BeautifulSoup(html, "html.parser")
     links = set()
-    # Compatible with classic & modern CL layouts
-    for el in soup.select(".result-row .result-title, .cl-static-search-result a.titlestring"):
-        href = el.get("href")
-        if href:
-            # Craigslist sometimes gives relative links; make absolute if needed
-            if href.startswith("/"):
-                href = f"{BASE_SITE}{href}"
+
+    # 1) Classic layout
+    for a in soup.select("a.result-title, a.result-title.hdrlnk"):
+        href = a.get("href")
+        if href: links.add(href)
+
+    # 2) Newer layout (cl-static / cl-search)
+    for a in soup.select("li.cl-search-result a.titlestring"):
+        href = a.get("href")
+        if href: links.add(href)
+
+    # 3) Fallback: any anchor under typical containers that looks like a posting
+    for a in soup.select("li.cl-search-result a, .result-row a"):
+        href = a.get("href")
+        if href and POST_PAGE_RE.search(href):
             links.add(href)
-    return list(links)
+
+    # Normalize to absolute
+    abs_links = []
+    for href in links:
+        if href.startswith("//"):
+            abs_links.append(f"https:{href}")
+        elif href.startswith("/"):
+            abs_links.append(f"{BASE_SITE}{href}")
+        else:
+            abs_links.append(href)
+
+    # keep only post pages (…/<post_id>.html)
+    abs_links = [u for u in abs_links if POST_PAGE_RE.search(u)]
+    return abs_links
+
 
 POST_ID_RE = re.compile(r"/(\d+)\.html?$")
 
