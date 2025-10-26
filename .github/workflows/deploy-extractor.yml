@@ -67,12 +67,26 @@ jobs:
             --gen2 --region="${REGION}" \
             --member="serviceAccount:${{ vars.DEPLOYER_SA }}"
 
-      # Optional: create/update Scheduler job to run at :05 past each hour
-      - name: Create/Update Cloud Scheduler job
+      - name: Ensure Scheduler API enabled
         run: |
+          gcloud services enable cloudscheduler.googleapis.com
+
+      - name: Create/Update Cloud Scheduler job (:05)
+        shell: bash
+        run: |
+          set -euo pipefail
+          gcloud config set project "${PROJECT_ID}"
           JOB_NAME="extract-per-listing-hourly"
+          REGION="${REGION}"
           FUNCTION_URL="${{ steps.cfurl.outputs.url }}"
+
+          echo "FUNCTION_URL=${FUNCTION_URL}"
+          if [[ -z "${FUNCTION_URL}" ]]; then
+            echo "ERROR: Function URL empty. Did the deploy finish?"; exit 1
+          fi
+
           if gcloud scheduler jobs describe "$JOB_NAME" --location="${REGION}" >/dev/null 2>&1; then
+            echo "Updating scheduler job..."
             gcloud scheduler jobs update http "$JOB_NAME" \
               --location="${REGION}" \
               --schedule="5 * * * *" \
@@ -82,6 +96,7 @@ jobs:
               --message-body='{"overwrite": true, "max_files": 0}' \
               --oidc-service-account-email="${{ vars.DEPLOYER_SA }}"
           else
+            echo "Creating scheduler job..."
             gcloud scheduler jobs create http "$JOB_NAME" \
               --location="${REGION}" \
               --schedule="5 * * * *" \
