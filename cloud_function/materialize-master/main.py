@@ -87,13 +87,13 @@ def _write_csv(records: Iterable[Dict], dest_key: str, columns=CSV_COLUMNS) -> i
             row = {c: rec.get(c, None) for c in columns}
             w.writerow(row)
             n += 1
-    return n  # close() on exit finalizes the GCS upload
-
+    return n  # close() finalizes the upload
 
 def materialize_http(request: Request):
     """
     HTTP POST (no body needed).
-    Crawls ALL structured run folders, de-dupes by post_id (keep newest run), and writes one CSV.
+    Crawls ALL structured run folders, de-dupes by post_id (keep newest run),
+    and writes one CSV directly to .../datasets/listings_master.csv.
     Returns JSON with counts and output path.
     """
     if not BUCKET_NAME:
@@ -111,24 +111,15 @@ def materialize_http(request: Request):
             pid = rec.get("post_id")
             if not pid:
                 continue
-            # keep the newer run_id
             prev = latest_by_post.get(pid)
+            # keep the newer record by run timestamp
             if (prev is None) or (_run_id_to_dt(rec.get("run_id", rid)) > _run_id_to_dt(prev.get("run_id", ""))):
                 latest_by_post[pid] = rec
 
-    # Stream to a temp object, then atomically publish to final path
+    # Write directly to the final CSV (simple mode; no temp file)
     base = f"{STRUCTURED_PREFIX}/datasets"
-    tmp_key = f"{base}/listings_master.csv.tmp"
     final_key = f"{base}/listings_master.csv"
-
-    rows = _write_csv(latest_by_post.values(), tmp_key)
-
-    # Atomic publish: copy tmp -> final, then delete tmp
-    b = storage_client.bucket(BUCKET_NAME)
-    src = b.blob(tmp_key)
-    dst = b.blob(final_key)
-    b.copy_blob(src, b, final_key)
-    src.delete()
+    rows = _write_csv(latest_by_post.values(), final_key)
 
     return jsonify({
         "ok": True,
@@ -137,3 +128,4 @@ def materialize_http(request: Request):
         "rows_written": rows,
         "output_csv": f"gs://{BUCKET_NAME}/{final_key}"
     }), 200
+
