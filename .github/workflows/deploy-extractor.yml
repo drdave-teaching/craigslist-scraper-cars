@@ -1,4 +1,4 @@
-name: Deploy extractor-per-listing (Gen2)
+name: Deploy extractor-per-listing
 
 on:
   workflow_dispatch:
@@ -13,26 +13,24 @@ permissions:
   id-token: write   # REQUIRED for WIF/OIDC
 
 env:
-  PROJECT_ID: ${{ secrets.GCP_PROJECT }}         # <-- set in repo secrets
-  REGION: ${{ secrets.GCP_REGION }}              # <-- set in repo secrets (e.g., us-central1)
+  PROJECT_ID: ${{ vars.GCP_PROJECT }}
+  REGION: ${{ vars.GCP_REGION }}
   FUNCTION_NAME: extractor-per-listing
   FUNCTION_DIR: functions/extractor-per-listing
   RUNTIME: python312
-  BUCKET_NAME: ${{ secrets.GCS_BUCKET }}         # <-- set in repo secrets
+  BUCKET_NAME: ${{ vars.GCS_BUCKET }}
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
 
-      # Authenticate via Workload Identity Federation (recommended, no JSON keys)
-      - name: Auth to Google Cloud (WIF)
+      - name: Auth to Google Cloud (WIF via repo variables)
         uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: ${{ secrets.WORKLOAD_IDENTITY_PROVIDER }}   # e.g. projects/123.../locations/global/workloadIdentityPools/github-pool/providers/github-provider
-          service_account: ${{ secrets.SERVICE_ACCOUNT_EMAIL }}                   # e.g. gha-deployer@PROJECT.iam.gserviceaccount.com
+          workload_identity_provider: ${{ vars.WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.DEPLOYER_SA }}
 
       - name: Setup gcloud
         uses: google-github-actions/setup-gcloud@v2
@@ -62,15 +60,15 @@ jobs:
           URL=$(gcloud functions describe "${FUNCTION_NAME}" --gen2 --region="${REGION}" --format='value(serviceConfig.uri)')
           echo "url=${URL}" >> "$GITHUB_OUTPUT"
 
-      # Optional: grant invoker to your deployer SA (so Scheduler can use it too)
+      # Optional: allow the same SA to invoke (handy for Scheduler OIDC)
       - name: Grant run.invoker to deployer SA
         run: |
           gcloud functions add-invoker-policy-binding "${FUNCTION_NAME}" \
             --gen2 --region="${REGION}" \
-            --member="serviceAccount:${{ secrets.SERVICE_ACCOUNT_EMAIL }}"
+            --member="serviceAccount:${{ vars.DEPLOYER_SA }}"
 
-      # Optional: create/update Scheduler job at :05
-      - name: Create/Update Cloud Scheduler job (:05)
+      # Optional: create/update Scheduler job to run at :05 past each hour
+      - name: Create/Update Cloud Scheduler job
         run: |
           JOB_NAME="extract-per-listing-hourly"
           FUNCTION_URL="${{ steps.cfurl.outputs.url }}"
@@ -82,7 +80,7 @@ jobs:
               --uri="${FUNCTION_URL}" \
               --http-method=POST \
               --message-body='{"overwrite": true, "max_files": 0}' \
-              --oidc-service-account-email="${{ secrets.SERVICE_ACCOUNT_EMAIL }}"
+              --oidc-service-account-email="${{ vars.DEPLOYER_SA }}"
           else
             gcloud scheduler jobs create http "$JOB_NAME" \
               --location="${REGION}" \
@@ -91,5 +89,5 @@ jobs:
               --uri="${FUNCTION_URL}" \
               --http-method=POST \
               --message-body='{"overwrite": true, "max_files": 0}' \
-              --oidc-service-account-email="${{ secrets.SERVICE_ACCOUNT_EMAIL }}"
+              --oidc-service-account-email="${{ vars.DEPLOYER_SA }}"
           fi
