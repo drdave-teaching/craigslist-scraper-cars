@@ -5,7 +5,7 @@ on:
   push:
     branches: [ main ]
     paths:
-      - 'cloud_functions/extractor-per-listing/**'
+      - 'cloud_function/extractor-per-listing/**'
       - '.github/workflows/deploy-extractor.yml'
 
 permissions:
@@ -16,7 +16,7 @@ env:
   PROJECT_ID: ${{ vars.GCP_PROJECT }}
   REGION: ${{ vars.GCP_REGION }}
   FUNCTION_NAME: extractor-per-listing
-  FUNCTION_DIR: cloud_functions/extractor-per-listing
+  FUNCTION_DIR: cloud_function/extractor-per-listing
   RUNTIME: python312
   BUCKET_NAME: ${{ vars.GCS_BUCKET }}
 
