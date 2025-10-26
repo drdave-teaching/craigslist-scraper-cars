@@ -72,11 +72,12 @@ def _run_id_to_dt(rid: str) -> datetime:
     return datetime.now(timezone.utc)
 
 def _open_gcs_text_writer(bucket: str, key: str):
-    """Open a streaming text writer to GCS."""
+    """Open a text-mode writer to GCS; close() will finalize the upload."""
     b = storage_client.bucket(bucket)
     blob = b.blob(key)
-    fh = blob.open("wb")  # resumable upload in binary
-    return io.TextIOWrapper(fh, encoding="utf-8", write_through=True, newline="")
+    # Text mode avoids the flush/finalize pitfall of binary+TextIOWrapper
+    return blob.open("w")  # newline handled by csv module
+
 
 def _write_csv(records: Iterable[Dict], dest_key: str, columns=CSV_COLUMNS) -> int:
     n = 0
@@ -96,36 +97,36 @@ def materialize_http(request: Request):
     and writes one CSV directly to .../datasets/listings_master.csv.
     Returns JSON with counts and output path.
     """
-    if not BUCKET_NAME:
-        return jsonify({"ok": False, "error": "missing GCS_BUCKET env"}), 500
+    try:
+        if not BUCKET_NAME:
+            return jsonify({"ok": False, "error": "missing GCS_BUCKET env"}), 500
 
-    # Gather run_ids (sorted ascending so later runs overwrite earlier)
-    run_ids = _list_run_ids(BUCKET_NAME, STRUCTURED_PREFIX)
-    if not run_ids:
-        return jsonify({"ok": False, "error": f"no runs found under {STRUCTURED_PREFIX}/"}), 200
+        run_ids = _list_run_ids(BUCKET_NAME, STRUCTURED_PREFIX)
+        if not run_ids:
+            return jsonify({"ok": False, "error": f"no runs found under {STRUCTURED_PREFIX}/"}), 200
 
-    # Build “latest record per post_id”
-    latest_by_post: Dict[str, Dict] = {}
-    for rid in run_ids:
-        for rec in _jsonl_records_for_run(BUCKET_NAME, STRUCTURED_PREFIX, rid):
-            pid = rec.get("post_id")
-            if not pid:
-                continue
-            prev = latest_by_post.get(pid)
-            # keep the newer record by run timestamp
-            if (prev is None) or (_run_id_to_dt(rec.get("run_id", rid)) > _run_id_to_dt(prev.get("run_id", ""))):
-                latest_by_post[pid] = rec
+        latest_by_post: Dict[str, Dict] = {}
+        for rid in run_ids:
+            for rec in _jsonl_records_for_run(BUCKET_NAME, STRUCTURED_PREFIX, rid):
+                pid = rec.get("post_id")
+                if not pid:
+                    continue
+                prev = latest_by_post.get(pid)
+                if (prev is None) or (_run_id_to_dt(rec.get("run_id", rid)) > _run_id_to_dt(prev.get("run_id", ""))):
+                    latest_by_post[pid] = rec
 
-    # Write directly to the final CSV (simple mode; no temp file)
-    base = f"{STRUCTURED_PREFIX}/datasets"
-    final_key = f"{base}/listings_master.csv"
-    rows = _write_csv(latest_by_post.values(), final_key)
+        base = f"{STRUCTURED_PREFIX}/datasets"
+        final_key = f"{base}/listings_master.csv"
+        rows = _write_csv(latest_by_post.values(), final_key)
 
-    return jsonify({
-        "ok": True,
-        "runs_scanned": len(run_ids),
-        "unique_listings": len(latest_by_post),
-        "rows_written": rows,
-        "output_csv": f"gs://{BUCKET_NAME}/{final_key}"
-    }), 200
+        return jsonify({
+            "ok": True,
+            "runs_scanned": len(run_ids),
+            "unique_listings": len(latest_by_post),
+            "rows_written": rows,
+            "output_csv": f"gs://{BUCKET_NAME}/{final_key}"
+        }), 200
+    except Exception as e:
+        # Return a JSON error so you don't just see a plain 500
+        return jsonify({"ok": False, "error": f"{type(e).__name__}: {e}"}), 500
 
