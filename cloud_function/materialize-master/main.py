@@ -79,19 +79,16 @@ def _open_gcs_text_writer(bucket: str, key: str):
     return io.TextIOWrapper(fh, encoding="utf-8", write_through=True, newline="")
 
 def _write_csv(records: Iterable[Dict], dest_key: str, columns=CSV_COLUMNS) -> int:
-    out = _open_gcs_text_writer(BUCKET_NAME, dest_key)
-    try:
+    n = 0
+    with _open_gcs_text_writer(BUCKET_NAME, dest_key) as out:
         w = csv.DictWriter(out, fieldnames=columns, extrasaction="ignore")
         w.writeheader()
-        n = 0
         for rec in records:
             row = {c: rec.get(c, None) for c in columns}
             w.writerow(row)
             n += 1
-        return n
-    finally:
-        out.flush()
-        out.detach().close()
+    return n  # close() on exit finalizes the GCS upload
+
 
 def materialize_http(request: Request):
     """
