@@ -5,41 +5,41 @@ on:
   push:
     branches: [ main ]
     paths:
-      - 'cloud_functions/extractor-per-listing/**'
+      - 'functions/extractor-per-listing/**'
       - '.github/workflows/deploy-extractor.yml'
 
 permissions:
   contents: read
-  id-token: write
+  id-token: write   # REQUIRED for WIF/OIDC
 
 env:
-  PROJECT_ID: ${{ secrets.GCP_PROJECT }}
-  REGION: ${{ secrets.GCP_REGION }}
+  PROJECT_ID: ${{ secrets.GCP_PROJECT }}         # <-- set in repo secrets
+  REGION: ${{ secrets.GCP_REGION }}              # <-- set in repo secrets (e.g., us-central1)
   FUNCTION_NAME: extractor-per-listing
   FUNCTION_DIR: functions/extractor-per-listing
   RUNTIME: python312
-  BUCKET_NAME: ${{ secrets.GCS_BUCKET }}
+  BUCKET_NAME: ${{ secrets.GCS_BUCKET }}         # <-- set in repo secrets
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
+      # Authenticate via Workload Identity Federation (recommended, no JSON keys)
       - name: Auth to Google Cloud (WIF)
         uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: ${{ secrets.WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ secrets.SERVICE_ACCOUNT_EMAIL }}
+          workload_identity_provider: ${{ secrets.WORKLOAD_IDENTITY_PROVIDER }}   # e.g. projects/123.../locations/global/workloadIdentityPools/github-pool/providers/github-provider
+          service_account: ${{ secrets.SERVICE_ACCOUNT_EMAIL }}                   # e.g. gha-deployer@PROJECT.iam.gserviceaccount.com
 
-      - name: Install gcloud
+      - name: Setup gcloud
         uses: google-github-actions/setup-gcloud@v2
         with:
           project_id: ${{ env.PROJECT_ID }}
 
-      - name: Verify source contents
+      - name: Verify source
         run: |
           ls -la "${FUNCTION_DIR}"
           test -f "${FUNCTION_DIR}/main.py"
@@ -62,21 +62,18 @@ jobs:
           URL=$(gcloud functions describe "${FUNCTION_NAME}" --gen2 --region="${REGION}" --format='value(serviceConfig.uri)')
           echo "url=${URL}" >> "$GITHUB_OUTPUT"
 
-      # Ensure the scheduler can invoke it via OIDC using the same deployer SA
-      - name: Grant run.invoker to Scheduler invoker SA (optional if already set)
+      # Optional: grant invoker to your deployer SA (so Scheduler can use it too)
+      - name: Grant run.invoker to deployer SA
         run: |
-          # If you have a dedicated scheduler SA, substitute it here.
-          INVOKER_SA="${{ secrets.SERVICE_ACCOUNT_EMAIL }}"
           gcloud functions add-invoker-policy-binding "${FUNCTION_NAME}" \
             --gen2 --region="${REGION}" \
-            --member="serviceAccount:${INVOKER_SA}"
+            --member="serviceAccount:${{ secrets.SERVICE_ACCOUNT_EMAIL }}"
 
-      - name: Create or Update Cloud Scheduler job (:05 past each hour)
+      # Optional: create/update Scheduler job at :05
+      - name: Create/Update Cloud Scheduler job (:05)
         run: |
           JOB_NAME="extract-per-listing-hourly"
           FUNCTION_URL="${{ steps.cfurl.outputs.url }}"
-
-          # Create or update with OIDC to the same service account
           if gcloud scheduler jobs describe "$JOB_NAME" --location="${REGION}" >/dev/null 2>&1; then
             gcloud scheduler jobs update http "$JOB_NAME" \
               --location="${REGION}" \
@@ -96,11 +93,3 @@ jobs:
               --message-body='{"overwrite": true, "max_files": 0}' \
               --oidc-service-account-email="${{ secrets.SERVICE_ACCOUNT_EMAIL }}"
           fi
-
-      - name: Smoke test invoke (OIDC)
-        run: |
-          FUNCTION_URL="${{ steps.cfurl.outputs.url }}"
-          curl -s -X POST "$FUNCTION_URL" \
-            -H "Authorization: Bearer $(gcloud auth print-identity-token)" \
-            -H "Content-Type: application/json" \
-            -d '{"overwrite": true, "max_files": 3}' | jq .
