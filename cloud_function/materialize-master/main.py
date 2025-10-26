@@ -20,8 +20,9 @@ STRUCTURED_PREFIX  = os.getenv("STRUCTURED_PREFIX", "structured") # e.g., "struc
 
 storage_client = storage.Client()
 
-# Accept run id format 20251026T170002Z only (that’s what extractor writes to structured/)
-RUN_ID_RE = re.compile(r"^\d{8}T\d{6}Z$")
+# Accept BOTH runIDs:
+RUN_ID_ISO_RE   = re.compile(r"^\d{8}T\d{6}Z$")  # 20251026T170002Z
+RUN_ID_PLAIN_RE = re.compile(r"^\d{14}$")        # 20251026170002
 
 # Stable CSV schema for students
 CSV_COLUMNS = [
@@ -31,17 +32,15 @@ CSV_COLUMNS = [
 ]
 
 def _list_run_ids(bucket: str, structured_prefix: str) -> list[str]:
-    """Return sorted run_ids under gs://bucket/structured/run_id=*/"""
     it = storage_client.list_blobs(bucket, prefix=f"{structured_prefix}/", delimiter="/")
     for _ in it:  # populate it.prefixes
         pass
     run_ids = []
     for p in getattr(it, "prefixes", []):
-        # p like 'structured/run_id=20251026T170002Z/'
-        tail = p.rstrip("/").split("/")[-1]
+        tail = p.rstrip("/").split("/")[-1]           # e.g. run_id=20251026170002
         if tail.startswith("run_id="):
             rid = tail.split("run_id=", 1)[1]
-            if RUN_ID_RE.match(rid):
+            if RUN_ID_ISO_RE.match(rid) or RUN_ID_PLAIN_RE.match(rid):
                 run_ids.append(rid)
     return sorted(run_ids)
 
@@ -65,7 +64,12 @@ def _jsonl_records_for_run(bucket: str, structured_prefix: str, run_id: str):
             continue
 
 def _run_id_to_dt(rid: str) -> datetime:
-    return datetime.strptime(rid, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+    if RUN_ID_ISO_RE.match(rid):
+        return datetime.strptime(rid, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+    if RUN_ID_PLAIN_RE.match(rid):
+        return datetime.strptime(rid, "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
+    # fallback: now
+    return datetime.now(timezone.utc)
 
 def _open_gcs_text_writer(bucket: str, key: str):
     """Open a streaming text writer to GCS."""
@@ -112,7 +116,7 @@ def materialize_http(request: Request):
                 continue
             # keep the newer run_id
             prev = latest_by_post.get(pid)
-            if (prev is None) or (rec.get("run_id", "") > prev.get("run_id", "")):
+            if (prev is None) or (_run_id_to_dt(rec.get("run_id", rid)) > _run_id_to_dt(prev.get("run_id", ""))):
                 latest_by_post[pid] = rec
 
     # Stream to a temp object, then atomically publish to final path
