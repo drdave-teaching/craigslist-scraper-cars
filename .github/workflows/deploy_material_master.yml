@@ -10,7 +10,7 @@ on:
 
 permissions:
   contents: read
-  id-token: write   # required for Workload Identity Federation
+  id-token: write   # still fine to keep; unused now for smoke
 
 env:
   PROJECT_ID: ${{ vars.GCP_PROJECT }}
@@ -29,7 +29,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Auth for deploy (ADC with access token; no audience)
+      # Auth for deploy (WIF -> access token / ADC)
       - name: Auth to Google Cloud (WIF)
         id: auth-deploy
         uses: google-github-actions/auth@v2
@@ -51,7 +51,7 @@ jobs:
           test -f "${FUNCTION_DIR}/main.py"
           test -f "${FUNCTION_DIR}/requirements.txt"
 
-      - name: Deploy Cloud Function (Gen2, HTTP)
+      - name: Deploy Cloud Function (Gen2, HTTP, unauthenticated)
         shell: bash
         run: |
           set -euo pipefail
@@ -67,6 +67,7 @@ jobs:
             --source="${FUNCTION_DIR}" \
             --entry-point="materialize_http" \
             --trigger-http \
+            --allow-unauthenticated \
             --timeout="${TIMEOUT_SECONDS}" \
             --memory="${MEMORY}" \
             ${SA_FLAG} \
@@ -79,17 +80,11 @@ jobs:
           echo "url=${URL}" >> "$GITHUB_OUTPUT"
           echo "Function URL: $URL"
 
-      - name: Grant run.invoker to deployer SA
-        run: |
-          gcloud functions add-invoker-policy-binding "${FUNCTION_NAME}" \
-            --gen2 --region="${REGION}" \
-            --member="serviceAccount:${{ vars.DEPLOYER_SA }}"
-
       - name: Ensure Scheduler API enabled (best-effort)
         run: |
           gcloud services enable cloudscheduler.googleapis.com || echo "Assuming Scheduler API already enabled."
 
-      - name: Create/Update Cloud Scheduler job (:10 each hour)
+      - name: Create/Update Cloud Scheduler job (:10 each hour, no OIDC)
         shell: bash
         run: |
           set -euo pipefail
@@ -106,7 +101,6 @@ jobs:
             --http-method=POST
             --message-body="{}"
             --attempt-deadline="${TIMEOUT_SECONDS}s"
-            --oidc-service-account-email="${{ vars.DEPLOYER_SA }}"
           )
 
           if gcloud scheduler jobs describe "$JOB_NAME" --location="${REGION}" >/dev/null 2>&1; then
@@ -115,26 +109,12 @@ jobs:
             gcloud scheduler jobs create http "$JOB_NAME" "${FLAGS[@]}"
           fi
 
-      # Re-auth just to mint an ID token with the function URL as audience (for smoke)
-      - name: Mint OIDC for smoke (id_token)
-        id: auth-idtoken
-        uses: google-github-actions/auth@v2
-        with:
-          workload_identity_provider: ${{ vars.WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ vars.DEPLOYER_SA }}
-          token_format: 'id_token'
-          audience: ${{ steps.cfurl.outputs.url }}
-          create_credentials_file: false
-          export_environment_variables: false
-
-      - name: Smoke invoke (non-blocking)
+      - name: Smoke invoke (non-blocking, no auth)
         shell: bash
         run: |
           set -euo pipefail
           URL="${{ steps.cfurl.outputs.url }}"
-          TOKEN="${{ steps.auth-idtoken.outputs.id_token }}"
           echo "POST $URL"
           curl -i -sS -X POST "$URL" \
-            -H "Authorization: Bearer $TOKEN" \
             -H "Content-Type: application/json" \
             -d '{}' || true
