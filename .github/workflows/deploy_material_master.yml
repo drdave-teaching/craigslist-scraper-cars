@@ -10,7 +10,7 @@ on:
 
 permissions:
   contents: read
-  id-token: write   # required for Workload Identity Federation
+  id-token: write
 
 env:
   PROJECT_ID: ${{ vars.GCP_PROJECT }}
@@ -19,7 +19,6 @@ env:
   FUNCTION_DIR: cloud_function/materialize-master
   RUNTIME: python312
   BUCKET_NAME: ${{ vars.GCS_BUCKET }}
-  # Tunables:
   TIMEOUT_SECONDS: "900"
   MEMORY: "2Gi"
   STRUCTURED_PREFIX: "structured"
@@ -52,7 +51,6 @@ jobs:
         run: |
           set -euo pipefail
           SA_FLAG=""
-          # Optional runtime SA (set vars.FUNCTION_SA to use it)
           if [[ -n "${{ vars.FUNCTION_SA }}" ]]; then
             SA_FLAG="--service-account='${{ vars.FUNCTION_SA }}'"
           fi
@@ -76,7 +74,7 @@ jobs:
           echo "url=${URL}" >> "$GITHUB_OUTPUT"
           echo "Function URL: $URL"
 
-      - name: Grant run.invoker to deployer SA (so Scheduler/CI can call it)
+      - name: Grant run.invoker to deployer SA
         run: |
           gcloud functions add-invoker-policy-binding "${FUNCTION_NAME}" \
             --gen2 --region="${REGION}" \
@@ -101,7 +99,6 @@ jobs:
             --time-zone="America/New_York"
             --uri="${FUNCTION_URL}"
             --http-method=POST
-            --headers=Content-Type=application/json
             --message-body="{}"
             --attempt-deadline="${TIMEOUT_SECONDS}s"
             --oidc-service-account-email="${{ vars.DEPLOYER_SA }}"
