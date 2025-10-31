@@ -19,6 +19,10 @@ env:
   FUNCTION_DIR: cloud_function/materialize-master
   RUNTIME: python312
   BUCKET_NAME: ${{ vars.GCS_BUCKET }}
+  # New tunables:
+  TIMEOUT_SECONDS: "900"
+  MEMORY: "2Gi"
+  STRUCTURED_PREFIX: "structured"
 
 jobs:
   deploy:
@@ -44,7 +48,15 @@ jobs:
           test -f "${FUNCTION_DIR}/requirements.txt"
 
       - name: Deploy Cloud Function (Gen2, HTTP)
+        shell: bash
         run: |
+          set -euo pipefail
+          SA_FLAG=""
+          # Optional: set vars.FUNCTION_SA to the runtime service account you want
+          if [[ -n "${{ vars.FUNCTION_SA }}" ]]; then
+            SA_FLAG="--service-account='${{ vars.FUNCTION_SA }}'"
+          fi
+
           gcloud functions deploy "${FUNCTION_NAME}" \
             --gen2 \
             --region="${REGION}" \
@@ -52,15 +64,19 @@ jobs:
             --source="${FUNCTION_DIR}" \
             --entry-point="materialize_http" \
             --trigger-http \
-            --set-env-vars="GCS_BUCKET=${BUCKET_NAME},STRUCTURED_PREFIX=structured"
+            --timeout="${TIMEOUT_SECONDS}" \
+            --memory="${MEMORY}" \
+            ${SA_FLAG} \
+            --set-env-vars="PROJECT_ID=${PROJECT_ID},GCS_BUCKET=${BUCKET_NAME},STRUCTURED_PREFIX=${STRUCTURED_PREFIX}"
 
       - name: Get Function URL
         id: cfurl
         run: |
           URL=$(gcloud functions describe "${FUNCTION_NAME}" --gen2 --region="${REGION}" --format='value(serviceConfig.uri)')
           echo "url=${URL}" >> "$GITHUB_OUTPUT"
+          echo "Function URL: $URL"
 
-      - name: Grant run.invoker to deployer SA
+      - name: Grant run.invoker to deployer SA (so Scheduler/CI can call it)
         run: |
           gcloud functions add-invoker-policy-binding "${FUNCTION_NAME}" \
             --gen2 --region="${REGION}" \
@@ -68,13 +84,13 @@ jobs:
 
       - name: Ensure Scheduler API enabled (best-effort)
         run: |
-          gcloud services enable cloudscheduler.googleapis.com || echo "No permission to enable; assuming it's already on."
+          gcloud services enable cloudscheduler.googleapis.com || echo "Assuming Scheduler API already enabled."
 
       - name: Create/Update Cloud Scheduler job (:10 each hour)
         shell: bash
         run: |
           set -euo pipefail
-          gcloud config set project "${PROJECT_ID}"
+          gcloud config set project "${PROJECT_ID}" >/dev/null
           JOB_NAME="materialize-master-hourly"
           FUNCTION_URL="${{ steps.cfurl.outputs.url }}"
           test -n "${FUNCTION_URL}"
@@ -86,6 +102,9 @@ jobs:
               --time-zone="America/New_York" \
               --uri="${FUNCTION_URL}" \
               --http-method=POST \
+              --headers="Content-Type=application/json" \
+              --body="{}" \
+              --attempt-deadline="${TIMEOUT_SECONDS}s" \
               --oidc-service-account-email="${{ vars.DEPLOYER_SA }}"
           else
             gcloud scheduler jobs create http "$JOB_NAME" \
@@ -94,5 +113,20 @@ jobs:
               --time-zone="America/New_York" \
               --uri="${FUNCTION_URL}" \
               --http-method=POST \
+              --headers="Content-Type=application/json" \
+              --body="{}" \
+              --attempt-deadline="${TIMEOUT_SECONDS}s" \
               --oidc-service-account-email="${{ vars.DEPLOYER_SA }}"
           fi
+
+      - name: Smoke invoke (returns quickly if your handler logs and exits)
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL="${{ steps.cfurl.outputs.url }}"
+          TOKEN="$(gcloud auth print-identity-token)"
+          echo "POST $URL"
+          curl -i -sS -X POST "$URL" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{}' || true  # don't fail the workflow if your run takes longer than GitHub's curl wait
