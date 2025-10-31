@@ -16,8 +16,8 @@ from sklearn.metrics import mean_absolute_error
 PROJECT_ID     = os.getenv("PROJECT_ID", "")
 GCS_BUCKET     = os.getenv("GCS_BUCKET", "")
 DATA_KEY       = os.getenv("DATA_KEY", "structured/datasets/listings_master.csv")
-OUTPUT_PREFIX  = os.getenv("OUTPUT_PREFIX", "preds")  # e.g., "structured/preds"
-TIMEZONE       = os.getenv("TIMEZONE", "America/New_York")             # split by local day
+OUTPUT_PREFIX  = os.getenv("OUTPUT_PREFIX", "preds")            # e.g., "structured/preds"
+TIMEZONE       = os.getenv("TIMEZONE", "America/New_York")      # split by local day
 LOG_LEVEL      = os.getenv("LOG_LEVEL", "INFO")
 
 logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s %(levelname)s %(message)s")
@@ -49,13 +49,11 @@ def run_once(dry_run: bool = False, max_depth: int = 12, min_samples_leaf: int =
         raise ValueError(f"Missing required columns: {sorted(missing)}")
 
     # --- Parse timestamps and choose local-day split ---
-    # Treat input as UTC if tz-naive; then convert to requested TIMEZONE for the date split
     dt = pd.to_datetime(df["scraped_at"], errors="coerce", utc=True)
     df["scraped_at_dt_utc"] = dt
     try:
         df["scraped_at_local"] = df["scraped_at_dt_utc"].dt.tz_convert(TIMEZONE)
     except Exception:
-        # Fallback if tz name invalid
         df["scraped_at_local"] = df["scraped_at_dt_utc"]
     df["date_local"] = df["scraped_at_local"].dt.date
 
@@ -65,25 +63,20 @@ def run_once(dry_run: bool = False, max_depth: int = 12, min_samples_leaf: int =
     df["year_num"]    = _clean_numeric(df["year"])
     df["mileage_num"] = _clean_numeric(df["mileage"])
 
-    # Quick diagnostics
     valid_price_rows = int(df["price_num"].notna().sum())
     logging.info("Rows total=%d | with valid numeric price=%d", orig_rows, valid_price_rows)
 
-    # Date summary (top 8 most recent)
     counts = df["date_local"].value_counts().sort_index()
-    tail_counts = counts.tail(8)
-    logging.info("Recent date counts (local): %s", json.dumps({str(k): int(v) for k, v in tail_counts.items()}))
+    logging.info("Recent date counts (local): %s", json.dumps({str(k): int(v) for k, v in counts.tail(8).items()}))
 
-    # Need at least 2 distinct dates to have a holdout
     unique_dates = sorted(d for d in df["date_local"].dropna().unique())
     if len(unique_dates) < 2:
         return {"status": "noop", "reason": "need at least two distinct dates", "dates": [str(d) for d in unique_dates]}
 
     today_local = unique_dates[-1]
-    train_df  = df[df["date_local"] <  today_local].copy()
+    train_df   = df[df["date_local"] <  today_local].copy()
     holdout_df = df[df["date_local"] == today_local].copy()
 
-    # Keep rows with a numeric target in TRAIN
     train_df = train_df[train_df["price_num"].notna()]
     dropped_for_target = int((df["date_local"] < today_local).sum()) - int(len(train_df))
     logging.info("Train rows after target clean: %d (dropped_for_target=%d)", len(train_df), dropped_for_target)
@@ -115,14 +108,17 @@ def run_once(dry_run: bool = False, max_depth: int = 12, min_samples_leaf: int =
     y_train = train_df[target]
     pipe.fit(X_train, y_train)
 
-    # Predict/evaluate on today's holdout
+    # ---- Predict/evaluate on today's holdout (now includes actual price fields) ----
     mae_today = None
     preds_df = pd.DataFrame()
     if not holdout_df.empty:
         X_h = holdout_df[feats]
         y_hat = pipe.predict(X_h)
-        preds_df = holdout_df[["post_id", "scraped_at", "make", "model", "year", "mileage"]].copy()
-        preds_df["pred_price"] = np.round(y_hat, 2)
+
+        cols = ["post_id", "scraped_at", "make", "model", "year", "mileage", "price"]
+        preds_df = holdout_df[cols].copy()
+        preds_df["actual_price"] = holdout_df["price_num"]       # cleaned numeric truth
+        preds_df["pred_price"]   = np.round(y_hat, 2)
 
         if holdout_df["price_num"].notna().any():
             y_true = holdout_df["price_num"]
@@ -130,13 +126,9 @@ def run_once(dry_run: bool = False, max_depth: int = 12, min_samples_leaf: int =
             if mask.any():
                 mae_today = float(mean_absolute_error(y_true[mask], y_hat[mask]))
 
-    # --- Choose output path ---
-    # Hourly folder structure (uncomment to enable):
+    # --- Output path: HOURLY folder structure ---
     now_utc = pd.Timestamp.utcnow().tz_convert("UTC")
-    out_key = f"{OUTPUT_PREFIX}/{now_utc.strftime('%Y/%m/%d/%H')}/preds.csv"
-
-    # Daily file (default):
-    out_key = f"{OUTPUT_PREFIX}/preds_{pd.to_datetime(today_local).strftime('%Y%m%d')}.csv"
+    out_key = f"{OUTPUT_PREFIX}/{now_utc.strftime('%Y%m%d%H')}/preds.csv"
 
     if not dry_run and len(preds_df) > 0:
         _write_csv_to_gcs(client, GCS_BUCKET, out_key, preds_df)
