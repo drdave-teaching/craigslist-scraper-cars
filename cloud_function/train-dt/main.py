@@ -16,7 +16,7 @@ from sklearn.metrics import mean_absolute_error
 PROJECT_ID     = os.getenv("PROJECT_ID", "")
 GCS_BUCKET     = os.getenv("GCS_BUCKET", "")
 DATA_KEY       = os.getenv("DATA_KEY", "structured/datasets/listings_master.csv")
-OUTPUT_PREFIX  = os.getenv("OUTPUT_PREFIX", "structured/predictions")  # e.g., "structured/preds"
+OUTPUT_PREFIX  = os.getenv("OUTPUT_PREFIX", "preds")  # e.g., "structured/preds"
 TIMEZONE       = os.getenv("TIMEZONE", "America/New_York")             # split by local day
 LOG_LEVEL      = os.getenv("LOG_LEVEL", "INFO")
 
@@ -132,8 +132,8 @@ def run_once(dry_run: bool = False, max_depth: int = 12, min_samples_leaf: int =
 
     # --- Choose output path ---
     # Hourly folder structure (uncomment to enable):
-    # now_utc = pd.Timestamp.utcnow().tz_convert("UTC")
-    # out_key = f"{OUTPUT_PREFIX}/{now_utc.strftime('%Y/%m/%d/%H')}/preds.csv"
+    now_utc = pd.Timestamp.utcnow().tz_convert("UTC")
+    out_key = f"{OUTPUT_PREFIX}/{now_utc.strftime('%Y/%m/%d/%H')}/preds.csv"
 
     # Daily file (default):
     out_key = f"{OUTPUT_PREFIX}/preds_{pd.to_datetime(today_local).strftime('%Y%m%d')}.csv"
