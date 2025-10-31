@@ -29,7 +29,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Auth for deploy (ADC with access token)
+      # Auth for deploy (ADC with access token; no audience)
       - name: Auth to Google Cloud (WIF)
         id: auth-deploy
         uses: google-github-actions/auth@v2
@@ -38,6 +38,7 @@ jobs:
           service_account: ${{ vars.DEPLOYER_SA }}
           token_format: 'access_token'
           create_credentials_file: true
+          export_environment_variables: true
 
       - name: Setup gcloud
         uses: google-github-actions/setup-gcloud@v2
@@ -114,7 +115,7 @@ jobs:
             gcloud scheduler jobs create http "$JOB_NAME" "${FLAGS[@]}"
           fi
 
-      # Re-auth specifically to mint an ID token with the function URL as audience
+      # Re-auth just to mint an ID token with the function URL as audience (for smoke)
       - name: Mint OIDC for smoke (id_token)
         id: auth-idtoken
         uses: google-github-actions/auth@v2
@@ -122,8 +123,9 @@ jobs:
           workload_identity_provider: ${{ vars.WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ vars.DEPLOYER_SA }}
           token_format: 'id_token'
-          audience: ${{ steps.cfurl.outputs.url }}   # <-- important
+          audience: ${{ steps.cfurl.outputs.url }}
           create_credentials_file: false
+          export_environment_variables: false
 
       - name: Smoke invoke (non-blocking)
         shell: bash
