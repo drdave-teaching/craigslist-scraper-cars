@@ -10,7 +10,7 @@ on:
 
 permissions:
   contents: read
-  id-token: write
+  id-token: write   # required for Workload Identity Federation
 
 env:
   PROJECT_ID: ${{ vars.GCP_PROJECT }}
@@ -29,11 +29,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Auth for deploy (ADC with access token)
       - name: Auth to Google Cloud (WIF)
+        id: auth-deploy
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ vars.WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ vars.DEPLOYER_SA }}
+          token_format: 'access_token'
+          create_credentials_file: true
 
       - name: Setup gcloud
         uses: google-github-actions/setup-gcloud@v2
@@ -110,12 +114,23 @@ jobs:
             gcloud scheduler jobs create http "$JOB_NAME" "${FLAGS[@]}"
           fi
 
+      # Re-auth specifically to mint an ID token with the function URL as audience
+      - name: Mint OIDC for smoke (id_token)
+        id: auth-idtoken
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.DEPLOYER_SA }}
+          token_format: 'id_token'
+          audience: ${{ steps.cfurl.outputs.url }}   # <-- important
+          create_credentials_file: false
+
       - name: Smoke invoke (non-blocking)
         shell: bash
         run: |
           set -euo pipefail
           URL="${{ steps.cfurl.outputs.url }}"
-          TOKEN="$(gcloud auth print-identity-token)"
+          TOKEN="${{ steps.auth-idtoken.outputs.id_token }}"
           echo "POST $URL"
           curl -i -sS -X POST "$URL" \
             -H "Authorization: Bearer $TOKEN" \
