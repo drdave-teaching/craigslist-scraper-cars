@@ -113,7 +113,10 @@ def run_once(dry_run: bool = False, max_depth: int = 12, min_samples_leaf: int =
                 mae_today = float(mean_absolute_error(y_true[mask], y_hat[mask]))
 
     # Write predictions for today
-    out_key = f"{OUTPUT_PREFIX}/preds_{today.strftime('%Y%m%d')}.csv"
+    from datetime import datetime, timezone
+    now_utc = pd.Timestamp.utcnow().tz_convert("UTC")
+    out_key = f"{OUTPUT_PREFIX}/{now_utc.strftime('%Y/%m/%d/%H')}/preds.csv"
+
     if not dry_run and len(preds_df) > 0:
         _write_csv_to_gcs(client, GCS_BUCKET, out_key, preds_df)
         logging.info("Wrote predictions to gs://%s/%s (%d rows)", GCS_BUCKET, out_key, len(preds_df))
