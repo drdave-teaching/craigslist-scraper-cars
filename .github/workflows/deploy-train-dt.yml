@@ -1,0 +1,121 @@
+name: Deploy train-dt
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - 'cloud_function/train-dt/**'
+      - '.github/workflows/deploy-train-dt.yml'
+
+permissions:
+  contents: read
+  id-token: write   # for WIF
+
+env:
+  PROJECT_ID: ${{ vars.GCP_PROJECT }}
+  REGION: ${{ vars.GCP_REGION }}
+  FUNCTION_NAME: train-dt
+  FUNCTION_DIR: cloud_function/train-dt
+  RUNTIME: python312
+  BUCKET_NAME: ${{ vars.GCS_BUCKET }}
+  TIMEOUT_SECONDS: "900"     # 15 min
+  MEMORY: "2Gi"              # give it headroom
+  DATA_KEY: "structured/datasets/listings_master.csv"
+  OUTPUT_PREFIX: "structured/preds"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Auth for deploy (WIF -> access token / ADC)
+      - name: Auth to Google Cloud (WIF)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.DEPLOYER_SA }}
+          token_format: 'access_token'
+          create_credentials_file: true
+          export_environment_variables: true
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+
+      - name: Verify source
+        run: |
+          ls -la "${FUNCTION_DIR}"
+          test -f "${FUNCTION_DIR}/main.py"
+          test -f "${FUNCTION_DIR}/requirements.txt"
+
+      - name: Deploy Cloud Function (Gen2, HTTP, unauthenticated)
+        shell: bash
+        run: |
+          set -euo pipefail
+          SA_FLAG=""
+          if [[ -n "${{ vars.FUNCTION_SA }}" ]]; then
+            SA_FLAG="--service-account='${{ vars.FUNCTION_SA }}'"
+          fi
+
+          gcloud functions deploy "${FUNCTION_NAME}" \
+            --gen2 \
+            --region="${REGION}" \
+            --runtime="${RUNTIME}" \
+            --source="${FUNCTION_DIR}" \
+            --entry-point="train_dt_http" \
+            --trigger-http \
+            --allow-unauthenticated \
+            --timeout="${TIMEOUT_SECONDS}" \
+            --memory="${MEMORY}" \
+            ${SA_FLAG} \
+            --set-env-vars="PROJECT_ID=${PROJECT_ID},GCS_BUCKET=${BUCKET_NAME},DATA_KEY=${DATA_KEY},OUTPUT_PREFIX=${OUTPUT_PREFIX}"
+
+      - name: Get Function URL
+        id: cfurl
+        run: |
+          URL=$(gcloud functions describe "${FUNCTION_NAME}" --gen2 --region="${REGION}" --format='value(serviceConfig.uri)')
+          echo "url=${URL}" >> "$GITHUB_OUTPUT"
+          echo "Function URL: $URL"
+
+      - name: Ensure Scheduler API enabled (best-effort)
+        run: |
+          gcloud services enable cloudscheduler.googleapis.com || echo "Assuming Scheduler API already enabled."
+
+      # Create/Update Cloud Scheduler job — runs at :15 every hour
+      - name: Create/Update Cloud Scheduler job (:15 each hour)
+        shell: bash
+        run: |
+          set -euo pipefail
+          gcloud config set project "${PROJECT_ID}" >/dev/null
+          JOB_NAME="train-dt-hourly-15"
+          FUNCTION_URL="${{ steps.cfurl.outputs.url }}"
+          test -n "${FUNCTION_URL}"
+
+          FLAGS=(
+            --location="${REGION}"
+            --schedule="15 * * * *"
+            --time-zone="America/New_York"
+            --uri="${FUNCTION_URL}"
+            --http-method=POST
+            --message-body="{}"
+            --attempt-deadline="${TIMEOUT_SECONDS}s"
+          )
+
+          if gcloud scheduler jobs describe "$JOB_NAME" --location="${REGION}" >/dev/null 2>&1; then
+            gcloud scheduler jobs update http "$JOB_NAME" "${FLAGS[@]}"
+          else
+            gcloud scheduler jobs create http "$JOB_NAME" "${FLAGS[@]}"
+          fi
+
+      - name: Smoke invoke (no auth)
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL="${{ steps.cfurl.outputs.url }}"
+          echo "POST $URL"
+          curl -i -sS -X POST "$URL" \
+            -H "Content-Type: application/json" \
+            -d '{"dry_run": true}' || true
